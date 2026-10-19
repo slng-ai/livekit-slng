@@ -240,8 +240,25 @@ async def _receive_by(ws: aiohttp.ClientWebSocketResponse, deadline: float) -> a
     Not ``receive(timeout=...)``: aiohttp answers pings and swallows pongs
     inside ``receive()`` and restarts that timeout on each one, so a server that
     pings, or this plugin's own heartbeat, can keep it from ever firing.
+
+    Nor ``asyncio.wait_for``: before Python 3.12 it can swallow a cancellation
+    that arrives as the read completes, so an idle reader told to stop reads on,
+    and the reply waiting for it to stop waits forever. A cancellation here
+    always propagates, and the read is over before this returns or raises, so
+    the socket never has two readers.
     """
-    return await asyncio.wait_for(ws.receive(), timeout=max(deadline - time.perf_counter(), 0.001))
+    receive = asyncio.ensure_future(ws.receive())
+    try:
+        done, _ = await asyncio.wait({receive}, timeout=max(deadline - time.perf_counter(), 0.001))
+    finally:
+        if not receive.done():
+            receive.cancel()
+            await asyncio.wait({receive})
+        if receive.done() and not receive.cancelled():
+            receive.exception()  # retrieved, so a read lost to a cancellation logs nothing
+    if not done:
+        raise asyncio.TimeoutError()
+    return receive.result()
 
 
 async def _close_ws(ws: aiohttp.ClientWebSocketResponse, *, context: str) -> None:
