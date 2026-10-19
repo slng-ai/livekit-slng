@@ -32,6 +32,7 @@ from livekit.agents import (
     APIConnectionError,
     APIConnectOptions,
     APIStatusError,
+    APITimeoutError,
     stt,
     utils,
 )
@@ -824,8 +825,9 @@ class SpeechStream(stt.SpeechStream):
                 # we still hold buffered audio for the in-flight utterance,
                 # reconnect the SAME endpoint and replay it rather than ending
                 # the stream (the common single-candidate case). Gated by
-                # retryability, not by reason: a timeout carries a synthetic
-                # TimeoutError (no HTTP status), which is_non_retryable_client_error
+                # retryability, not by reason: a timeout (the watchdog's
+                # synthetic TimeoutError, or a connect or ready APITimeoutError)
+                # has no HTTP status, which is_non_retryable_client_error
                 # treats as retryable. Bounded by _candidate_max_retry so a
                 # persistently failing endpoint still surfaces the error.
                 if (
@@ -1491,7 +1493,15 @@ class SpeechStream(stt.SpeechStream):
                         **error_details(exc),
                     )
                     raise exc
-                if not await failover(reason="hard_fail", exc=exc, timeout_s=None):
+                # A timeout still fails over like any other connection
+                # failure (APITimeoutError is an APIConnectionError); only the
+                # reason it reports differs.
+                timed_out = isinstance(exc, APITimeoutError)
+                if not await failover(
+                    reason="timeout" if timed_out else "hard_fail",
+                    exc=exc,
+                    timeout_s=self._conn_options.timeout if timed_out else None,
+                ):
                     return
                 continue
             finally:
@@ -1525,7 +1535,11 @@ class SpeechStream(stt.SpeechStream):
                 ),
                 self._conn_options.timeout,
             )
-        except (TimeoutError, asyncio.TimeoutError, aiohttp.ClientConnectorError) as e:
+        except (TimeoutError, asyncio.TimeoutError) as e:
+            raise APITimeoutError(
+                f"SLNG STT did not connect within {self._conn_options.timeout} s"
+            ) from e
+        except aiohttp.ClientConnectorError as e:
             raise APIConnectionError("failed to connect to SLNG STT") from e
         except aiohttp.ClientResponseError as e:
             # A refused upgrade: the server's ID for it is in its headers. Its
@@ -1590,7 +1604,9 @@ class SpeechStream(stt.SpeechStream):
                     timeout=self._conn_options.timeout,
                 )
             except (TimeoutError, asyncio.TimeoutError) as exc:
-                raise APIConnectionError("timed out waiting for SLNG STT ready") from exc
+                raise APITimeoutError(
+                    f"SLNG STT sent no ready within {self._conn_options.timeout} s"
+                ) from exc
 
             if msg.type in (
                 aiohttp.WSMsgType.CLOSED,

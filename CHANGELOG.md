@@ -66,6 +66,9 @@ livekit-plugins-slng" in the README for the three steps to switch.
 - Every error raised for a closed connection names the close code and the
   server's close reason, cut to 200 characters. The STT failover logs put the
   error's text under `lk.pii.error` instead of in the message.
+- An STT connect or `ready` that misses its timeout raises `APITimeoutError`
+  naming the timeout, instead of `APIConnectionError`, and its failover is
+  reported with the reason `"timeout"`. It is retried and failed over as before.
 
 ### Added
 
