@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # Keeps the pinned action commits in the workflows current, in one monthly PR.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
