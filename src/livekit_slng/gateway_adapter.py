@@ -16,7 +16,10 @@ _ERROR_MESSAGE_MAX_LEN = 500
 # A code missing here yields no status, and a status-less error is retried on
 # every candidate in turn, so a permanent failure (a malformed pronunciation
 # reference, say) costs a full walk of the chain on every reply. Keep this in
-# step with the codes the gateway emits on a websocket error frame.
+# step with the codes the gateway emits on a websocket error frame. Both of its
+# formats are here: the older codes, and the canonical ones its error envelope
+# carries. A 4xx other than 408, 409, 425 and 429 is not retried on the same
+# model; anything else is.
 BRIDGE_ERROR_CODE_STATUS: dict[str, int] = {
     "auth_error": 401,
     "config_error": 400,
@@ -44,6 +47,22 @@ BRIDGE_ERROR_CODE_STATUS: dict[str, int] = {
     "unsupported_watermark_format": 400,
     "watermarking_error": 500,
     "watermarking_unavailable": 503,
+    # The canonical envelope. The provider's own failures, classified by the
+    # gateway from the provider's HTTP status: a request or a credential the
+    # provider refuses, or a quota it has used up, fails the same way on
+    # every retry, so it moves on to the next model.
+    "provider_invalid_request": 400,
+    "provider_credential_rejected": 401,
+    "provider_quota_exceeded": 402,
+    "provider_rate_limited": 429,
+    "provider_unavailable": 503,
+    # The gateway's own failures.
+    "internal_error": 500,
+    "processing_error": 500,
+    # The gateway ended the session: a new connection is all it takes.
+    "idle_timeout": 408,
+    "session_duration_exceeded": 408,
+    "service_restart": 503,
 }
 
 
@@ -53,24 +72,45 @@ def bridge_error_status(code: object) -> int | None:
     return None
 
 
+def _http_status(value: object) -> int | None:
+    """``value`` as an HTTP status: an int, or a numeric string, in 100-599."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        try:
+            value = int(value)
+        except ValueError:
+            return None
+    if isinstance(value, int) and 100 <= value <= 599:
+        return value
+    return None
+
+
 def extract_error_status(frame: Mapping[str, object]) -> int | None:
+    """The HTTP status an error frame stands for, which retry and failover read.
+
+    The provider's own status (``upstream_status``) comes first, then the
+    gateway's string ``code`` through ``BRIDGE_ERROR_CODE_STATUS``, then a
+    numeric code in the older format. A number outside 100-599, such as a
+    WebSocket close code, is not a status. ``provider_code`` is the provider's
+    native code, in whatever scheme the provider uses, so it is never read.
+    """
+    upstream = frame.get("upstream_status")
+    if isinstance(upstream, int) and not isinstance(upstream, bool) and 100 <= upstream <= 599:
+        return upstream
     candidates: list[object] = []
     nested = frame.get("data")
     if isinstance(nested, Mapping):
         candidates.extend(nested.get(key) for key in ("status_code", "code", "err_code"))
     candidates.extend(frame.get(key) for key in ("status_code", "code", "err_code"))
     for value in candidates:
-        if isinstance(value, bool):
-            continue
-        if isinstance(value, int):
-            return value
-        if isinstance(value, str):
-            try:
-                return int(value)
-            except ValueError:
-                status = bridge_error_status(value)
-                if status is not None:
-                    return status
+        status = bridge_error_status(value)
+        if status is not None:
+            return status
+    for value in candidates:
+        status = _http_status(value)
+        if status is not None:
+            return status
     return None
 
 

@@ -72,3 +72,9 @@ livekit-plugins-slng" in the README for the three steps to switch.
   `partial_head_min_chars` (default 25) sets the shortest opening.
 - `TTSMetrics` report `connection_reused` and `acquire_time` for every reply.
 - livekit's `tts.FallbackAdapter` can wrap `slng.TTS`.
+- The gateway's canonical error codes and its `upstream_status` decide retry
+  and failover, in both of its error formats: a provider's refused request,
+  rejected credential or used-up quota moves on to the next model without a
+  retry, while rate limits, outages, restarts and session timeouts are retried.
+  A number outside 100-599 in an error frame, such as a WebSocket close code,
+  is no longer reported as an HTTP status.
