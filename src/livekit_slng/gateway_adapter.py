@@ -1,9 +1,25 @@
+# Copyright 2026 SLNG.
+# First published in livekit-plugins-slng, part of LiveKit Agents, and modified by SLNG since.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from __future__ import annotations
 
 import re
 from collections.abc import Mapping
 from typing import Any
 
+import aiohttp
 from livekit.agents import APIStatusError
 
 _EXTERNAL_TRACKING_ID_RE = re.compile(r"[\x00-\x1f\x7f,]")
@@ -16,7 +32,8 @@ _ERROR_MESSAGE_MAX_LEN = 500
 _CLOSE_REASON_MAX_LEN = 200
 
 # The gateway's error codes, mapped to the HTTP status the retry logic reads.
-# A code missing here yields no status, and a status-less error is retried on
+# A code missing here yields no status unless the canonical envelope's
+# `recovery` asks for a fixed request, and a status-less error is retried on
 # every candidate in turn, so a permanent failure (a malformed pronunciation
 # reference, say) costs a full walk of the chain on every reply. Keep this in
 # step with the codes the gateway emits on a websocket error frame. Both of its
@@ -92,28 +109,32 @@ def _http_status(value: object) -> int | None:
 def extract_error_status(frame: Mapping[str, object]) -> int | None:
     """The HTTP status an error frame stands for, which retry and failover read.
 
-    The provider's own status (``upstream_status``) comes first, then the
-    gateway's string ``code`` through ``BRIDGE_ERROR_CODE_STATUS``, then a
-    numeric code in the older format. A number outside 100-599, such as a
-    WebSocket close code, is not a status. ``provider_code`` is the provider's
-    native code, in whatever scheme the provider uses, so it is never read.
+    The gateway's own classification decides: the first of ``status_code``,
+    ``code`` and ``err_code`` (nested under ``data`` first, as the older format
+    nests them) that is a code in ``BRIDGE_ERROR_CODE_STATUS`` or a number in
+    100-599. A number outside that range, such as a WebSocket close code, is not
+    a status.
+
+    The canonical envelope's ``upstream_status``, the provider's own HTTP
+    status, is never read: the gateway has already classified it into
+    ``code``, and keeps it even where it chose ``provider_error``, as for a
+    provider's 413, whose limit the next model may not share. Nor is
+    ``provider_code``, the provider's native code in whatever scheme the
+    provider uses. For a code this table does not know yet, the envelope's
+    ``recovery`` decides: ``fix_request`` reads as a 400, so the request moves
+    on to the next model without a retry, and anything else is retried.
     """
-    upstream = frame.get("upstream_status")
-    if isinstance(upstream, int) and not isinstance(upstream, bool) and 100 <= upstream <= 599:
-        return upstream
     candidates: list[object] = []
     nested = frame.get("data")
     if isinstance(nested, Mapping):
         candidates.extend(nested.get(key) for key in ("status_code", "code", "err_code"))
     candidates.extend(frame.get(key) for key in ("status_code", "code", "err_code"))
     for value in candidates:
-        status = bridge_error_status(value)
+        status = bridge_error_status(value) or _http_status(value)
         if status is not None:
             return status
-    for value in candidates:
-        status = _http_status(value)
-        if status is not None:
-            return status
+    if frame.get("recovery") == "fix_request":
+        return 400
     return None
 
 
@@ -164,6 +185,23 @@ def gateway_status_error(
     if status is None:
         return APIStatusError(message, request_id=request_id)
     return APIStatusError(message, status_code=status, request_id=request_id)
+
+
+def handshake_status_error(service: str, exc: aiohttp.ClientResponseError) -> APIStatusError:
+    """A refused WebSocket upgrade as the error to raise, with SLNG's request ID.
+
+    The message names the service, the endpoint and the HTTP status, which is
+    what tells a wrong region from a wrong key. The endpoint loses any
+    credentials and query a caller's own URL might carry. The status still
+    decides retry and failover.
+    """
+    endpoint = exc.request_info.real_url.with_user(None).with_query(None).with_fragment(None)
+    return APIStatusError(
+        f"SLNG {service} refused the WebSocket upgrade to {endpoint} (HTTP {exc.status})",
+        status_code=exc.status,
+        request_id=request_id_from_handshake(exc),
+        body=None,
+    )
 
 
 def validate_model_identifier(model: str) -> str:

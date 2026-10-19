@@ -105,3 +105,17 @@ def test_a_blank_argument_falls_back_to_the_env_var(monkeypatch):
     monkeypatch.setenv("SLNG_BASE_URL", "sg.api.slng.ai")
     t = slng.TTS(api_key="k", model="deepgram/aura:2", voice="v", slng_base_url=" ")
     assert t._opts.model_endpoint == TTS_URL
+
+
+def test_the_api_key_is_trimmed_too(monkeypatch):
+    monkeypatch.setenv("SLNG_API_KEY", "  key-from-an-env-file\n")
+    assert slng.TTS(model="deepgram/aura:2", voice="v")._opts.api_key == "key-from-an-env-file"
+    assert slng.STT(model="deepgram/nova:3")._api_token == "key-from-an-env-file"
+
+
+def test_a_blank_api_key_is_missing(monkeypatch):
+    monkeypatch.setenv("SLNG_API_KEY", " \n")
+    with pytest.raises(ValueError, match="api_key"):
+        slng.TTS(model="deepgram/aura:2", voice="v")
+    with pytest.raises(ValueError, match="api_key"):
+        slng.STT(model="deepgram/nova:3")

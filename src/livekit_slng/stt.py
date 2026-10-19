@@ -31,6 +31,7 @@ from livekit.agents import (
     DEFAULT_API_CONNECT_OPTIONS,
     APIConnectionError,
     APIConnectOptions,
+    APIError,
     APIStatusError,
     APITimeoutError,
     stt,
@@ -53,13 +54,13 @@ from .gateway_adapter import (
     describe_close,
     error_details,
     gateway_status_error,
+    handshake_status_error,
     is_non_retryable_client_error,
     is_payload_too_large,
     merge_init_payload,
     normalize_region_override,
     normalize_world_part_override,
     request_id_from_frame,
-    request_id_from_handshake,
 )
 from .log import logger
 
@@ -246,7 +247,10 @@ class STT(stt.STT):
                 DeprecationWarning,
                 stacklevel=2,
             )
-        resolved_key = api_key or api_token or os.environ.get("SLNG_API_KEY")
+        # Trimmed, like the host: an env file's trailing newline would break the header.
+        resolved_key = (
+            api_key or api_token or os.environ.get("SLNG_API_KEY") or ""
+        ).strip() or None
         if not resolved_key:
             raise ValueError("api_key is required, or set the SLNG_API_KEY environment variable")
         slng_base_url = resolve_base_url(slng_base_url)
@@ -811,13 +815,15 @@ class SpeechStream(stt.SpeechStream):
             nonlocal candidate_attempts, silent_reconnects, same_endpoint_replays
             from_model = current_model()
             details = error_details(exc)
-            # The error's message can quote the provider's, so it goes under a
-            # PII key, and there is no traceback: its last line is the message.
+            # An API error's message can quote the provider's, so it goes under
+            # a PII key, with no traceback, whose last line is the message. Any
+            # other exception is a bug this failover absorbs: it keeps its trace.
             failure_fields = {
                 "error_type": details["error_type"],
                 "error_status": details["error_code"],
                 "lk.pii.error": details["error_message"],
             }
+            bug_trace = exc if exc is not None and not isinstance(exc, APIError) else None
             next_index = self._candidate_state.advance(self._active_endpoint_index)
             if next_index is None:
                 # No further fallback candidate. If the failure is transient
@@ -845,6 +851,7 @@ class SpeechStream(stt.SpeechStream):
                         details["error_type"],
                         from_model,
                         extra=failure_fields,
+                        exc_info=bug_trace,
                     )
                     input_finished = False
                     closing = False
@@ -860,6 +867,7 @@ class SpeechStream(stt.SpeechStream):
                     details["error_type"],
                     from_model,
                     extra=failure_fields,
+                    exc_info=bug_trace,
                 )
                 self._slng_stt._emit_plugin_event(
                     "fallback.exhausted",
@@ -882,6 +890,7 @@ class SpeechStream(stt.SpeechStream):
                 from_model,
                 to_model,
                 extra=failure_fields,
+                exc_info=bug_trace,
             )
             self._slng_stt._emit_plugin_event(
                 "fallback.attempt_failed",
@@ -1542,14 +1551,7 @@ class SpeechStream(stt.SpeechStream):
         except aiohttp.ClientConnectorError as e:
             raise APIConnectionError("failed to connect to SLNG STT") from e
         except aiohttp.ClientResponseError as e:
-            # A refused upgrade: the server's ID for it is in its headers. Its
-            # status still decides retry and failover, as it did before.
-            raise APIStatusError(
-                message=e.message,
-                status_code=e.status,
-                request_id=request_id_from_handshake(e),
-                body=None,
-            ) from e
+            raise handshake_status_error("STT", e) from e
 
         init_message = build_stt_init_payload(
             model=model,

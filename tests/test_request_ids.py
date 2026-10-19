@@ -17,6 +17,7 @@ from multidict import CIMultiDict, CIMultiDictProxy
 from test_gateway_errors import AUDIO, ErrorOnTextWs, SttWs, envelope, stt_stream
 
 import livekit_slng as slng
+from livekit_slng.gateway_adapter import handshake_status_error
 
 ONCE = APIConnectOptions(max_retry=0, timeout=0.3)
 RETRY3 = APIConnectOptions(max_retry=3, retry_interval=0.01)
@@ -98,8 +99,27 @@ async def test_a_refused_upgrade_reports_the_header_id():
     with pytest.raises(APIStatusError) as raised:
         await drive_reply(t, sample_deltas(), conn_options=RETRY3)
     assert raised.value.status_code == 401 and raised.value.request_id == "gw-hs-1"
+    assert "SLNG TTS refused the WebSocket upgrade to wss://us-east.api.slng.ai/" in str(
+        raised.value
+    )
+    assert "(HTTP 401)" in str(raised.value)
     assert session.attempts == 1, "a refused key is not retried"
     await t.aclose()
+
+
+def test_a_refused_upgrade_names_its_endpoint_without_credentials():
+    url = yarl.URL("wss://user:pw@eu-west.api.slng.ai/v1/bridges/unmute/stt/x/y?token=abc#f")
+    exc = aiohttp.WSServerHandshakeError(
+        aiohttp.RequestInfo(url, "GET", CIMultiDictProxy(CIMultiDict()), url),
+        (),
+        status=404,
+        message="Invalid response status",
+        headers=CIMultiDictProxy(CIMultiDict()),
+    )
+    message = str(handshake_status_error("STT", exc))
+    assert "SLNG STT refused the WebSocket upgrade to " in message and "(HTTP 404)" in message
+    assert "eu-west.api.slng.ai/v1/bridges/unmute/stt/x/y" in message
+    assert "pw" not in message and "token" not in message and "#f" not in message
 
 
 async def test_no_gateway_id_means_no_request_id():

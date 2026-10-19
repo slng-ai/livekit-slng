@@ -60,13 +60,13 @@ from .gateway_adapter import (
     describe_close,
     extract_error_status,
     gateway_status_error,
+    handshake_status_error,
     is_non_retryable_client_error,
     is_payload_too_large,
     merge_init_payload,
     normalize_region_override,
     normalize_world_part_override,
     request_id_from_frame,
-    request_id_from_handshake,
     with_request_id,
 )
 from .log import logger
@@ -311,8 +311,8 @@ def _extract_error_status(resp: dict[str, object]) -> int | None:
 def _contains_letter(text: str) -> bool:
     """True if the text has at least one alphabetic character in any script.
 
-    ``str.isalpha`` covers every Unicode letter — Latin, Devanagari, Bengali,
-    Tamil, etc. — so this is script-agnostic. Tokens with only punctuation,
+    ``str.isalpha`` covers every Unicode letter (Latin, Devanagari, Bengali,
+    Tamil, etc.), so this is script-agnostic. Tokens with only punctuation,
     digits, whitespace, or symbols (e.g. "—", "4.5", "5,000") return False.
     Some providers (notably Sarvam Bulbul) reject a per-token WebSocket frame
     that carries no allowed-language character, so such tokens must be merged
@@ -595,8 +595,8 @@ class _HeldConnection:
 
     def note_ready(self, resp: dict[str, object]) -> None:
         """Record what a `ready` frame says, keeping any field it omits."""
-        request_id = resp.get("slng_request_id")
-        if isinstance(request_id, str):
+        request_id = request_id_from_frame(resp)
+        if request_id is not None:
             self.gateway_request_id = request_id
         session_id = resp.get("session_id")
         if isinstance(session_id, str):
@@ -730,7 +730,8 @@ class TTS(tts.TTS):
                 "through the Unmute Bridge. Pass model='provider/model:variant' "
                 "or connections=[...] instead."
             )
-        resolved_key = api_key or os.environ.get("SLNG_API_KEY")
+        # Trimmed, like the host: an env file's trailing newline would break the header.
+        resolved_key = (api_key or os.environ.get("SLNG_API_KEY") or "").strip() or None
         if not resolved_key:
             raise ValueError("api_key is required, or set the SLNG_API_KEY environment variable")
         slng_base_url = resolve_base_url(slng_base_url)
@@ -2195,13 +2196,7 @@ class ChunkedStream(tts.ChunkedStream):
                 with_request_id("Request timed out.", self._gateway_request_id)
             ) from None
         except aiohttp.ClientResponseError as e:
-            # A refused upgrade: the server's ID for it is in its headers.
-            raise APIStatusError(
-                message=e.message,
-                status_code=e.status,
-                request_id=request_id_from_handshake(e),
-                body=None,
-            ) from None
+            raise handshake_status_error("TTS", e) from None
         except (APIStatusError, APIConnectionError):
             raise
         except Exception as e:
@@ -2336,13 +2331,7 @@ class SynthesizeStream(tts.SynthesizeStream):
                 with_request_id("Request timed out.", self._gateway_request_id)
             ) from None
         except aiohttp.ClientResponseError as e:
-            # A refused upgrade: the server's ID for it is in its headers.
-            raise APIStatusError(
-                message=e.message,
-                status_code=e.status,
-                request_id=request_id_from_handshake(e),
-                body=None,
-            ) from None
+            raise handshake_status_error("TTS", e) from None
         except (APIStatusError, APIConnectionError):
             raise
         except Exception as e:

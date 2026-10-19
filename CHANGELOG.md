@@ -19,8 +19,9 @@ livekit-plugins-slng" in the README for the three steps to switch.
   example `us-east.api.slng.ai`, or set `SLNG_BASE_URL`. Without either,
   construction raises a `ValueError`. Connections given as full endpoint URLs
   need neither.
-- Whitespace around `slng_base_url` or `SLNG_BASE_URL`, such as an env file's
-  trailing newline, is trimmed, and a blank value counts as missing.
+- Whitespace around the host or the API key (`slng_base_url`, `SLNG_BASE_URL`,
+  `api_key`, `SLNG_API_KEY`), such as an env file's trailing newline, is
+  trimmed, and a blank value counts as missing.
 - TTS holds one WebSocket for the whole call instead of one per reply.
   `warm_standby_enabled` defaults to True: `prewarm()` opens the connection,
   and it counts as one concurrent SLNG session for the whole call, silences of
@@ -62,7 +63,8 @@ livekit-plugins-slng" in the README for the three steps to switch.
   upgrade's `X-Slng-Request-Id` header. It is the `request_id` of an
   `APIStatusError` (None when the server gave none), and ends the message of
   an `APIConnectionError` or `APITimeoutError`. A refused STT upgrade raises
-  `APIStatusError` instead of aiohttp's `WSServerHandshakeError`.
+  `APIStatusError` instead of aiohttp's `WSServerHandshakeError`, and a refused
+  upgrade's message names the service, the endpoint and the HTTP status.
 - Every error raised for a closed connection names the close code and the
   server's close reason, cut to 200 characters. The STT failover logs put the
   error's text under `lk.pii.error` instead of in the message.
@@ -84,9 +86,10 @@ livekit-plugins-slng" in the README for the three steps to switch.
   `partial_head_min_chars` (default 25) sets the shortest opening.
 - `TTSMetrics` report `connection_reused` and `acquire_time` for every reply.
 - livekit's `tts.FallbackAdapter` can wrap `slng.TTS`.
-- The gateway's canonical error codes and its `upstream_status` decide retry
-  and failover, in both of its error formats: a provider's refused request,
-  rejected credential or used-up quota moves on to the next model without a
-  retry, while rate limits, outages, restarts and session timeouts are retried.
-  A number outside 100-599 in an error frame, such as a WebSocket close code,
-  is no longer reported as an HTTP status.
+- The gateway's canonical error codes decide retry and failover, in both of
+  its error formats: a provider's refused request, rejected credential or
+  used-up quota moves on to the next model without a retry, while rate limits,
+  outages, restarts and session timeouts are retried. A code the plugin does
+  not know yet follows the error's `recovery` hint. A number outside 100-599 in
+  an error frame, such as a WebSocket close code, is no longer reported as an
+  HTTP status.

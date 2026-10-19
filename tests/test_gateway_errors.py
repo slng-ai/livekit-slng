@@ -67,9 +67,29 @@ def test_every_canonical_code_carries_a_status(code, status):
     assert extract_error_status(envelope(code)) == status
 
 
-def test_the_providers_status_comes_first():
-    assert extract_error_status(envelope("provider_error", upstream_status=429)) == 429
-    assert extract_error_status(envelope("provider_error", upstream_status=401)) == 401
+@pytest.mark.parametrize("upstream", [401, 403, 413, 429])
+def test_the_gateways_code_wins_over_the_providers_status(upstream):
+    # The gateway keeps upstream_status on a provider_error it chose not to
+    # classify further, a provider's 413 among them: that limit is the
+    # provider's own, so the request still fails over to the next model.
+    assert extract_error_status(envelope("provider_error", upstream_status=upstream)) == 502
+
+
+def test_a_code_we_do_not_know_yet_follows_its_recovery():
+    assert extract_error_status(envelope("a_future_code", recovery="fix_request")) == 400
+    for recovery in ("backoff", "reconnect", "unknown"):
+        assert extract_error_status(envelope("a_future_code", recovery=recovery)) is None
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        {"type": "error", "code": "provider_error", "status_code": 400},
+        {"type": "error", "code": "internal_error", "data": {"status_code": 400}},
+    ],
+)
+def test_an_explicit_status_in_the_older_format_keeps_its_place(frame):
+    assert extract_error_status(frame) == 400
 
 
 @pytest.mark.parametrize("upstream", [0, 99, 600, 1011, "429", True, None, 4.29])
@@ -114,9 +134,12 @@ NOT_RETRIED = [
     envelope("provider_quota_exceeded", upstream_status=402, recovery="fix_request"),
     envelope("provider_invalid_request", upstream_status=422, recovery="fix_request"),
     envelope("config_error", recovery="fix_request"),
-    envelope("provider_error", upstream_status=403),
+    envelope("a_future_code", recovery="fix_request"),
 ]
 RETRIED = [
+    envelope("provider_error", upstream_status=413),
+    envelope("provider_error", upstream_status=403),
+    envelope("a_future_code", recovery="backoff"),
     envelope("provider_rate_limited", upstream_status=429, recovery="backoff"),
     envelope("provider_unavailable", upstream_status=503, recovery="backoff"),
     envelope("rate_limit_exceeded", recovery="backoff"),

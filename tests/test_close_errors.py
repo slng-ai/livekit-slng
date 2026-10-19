@@ -196,6 +196,37 @@ async def test_stt_failover_logs_keep_provider_text_out_of_the_message(caplog):
     assert all(getattr(r, "error_type", None) == "APIStatusError" for r in failures)
 
 
+async def test_stt_failover_keeps_the_trace_of_a_bug(caplog):
+    # A bug the failover absorbs leaves its stack trace in the log; an API error,
+    # whose message can quote the provider, does not (see the test above).
+    stream, session = stt_stream(
+        {"deepgram/nova:3": {}, "soniox/stt-rt:v3": {"type": "ready", "slng_request_id": "r"}}
+    )
+    real_connect = session.ws_connect
+
+    async def connect(url, **kw):
+        if "deepgram" in url:
+            session.connects.append(url)
+            raise RuntimeError("a bug in the plugin")
+        return await real_connect(url, **kw)
+
+    session.ws_connect = connect
+
+    async def read():
+        async for _ in stream:
+            pass
+
+    with caplog.at_level(logging.WARNING, logger="livekit_slng"):
+        reader = asyncio.create_task(read())
+        while len(session.connects) < 2:
+            await asyncio.sleep(0.01)
+        stream.end_input()
+        await asyncio.wait_for(reader, 3)
+    failed = [r for r in caplog.records if r.getMessage().startswith("STT attempt failed")]
+    assert failed and failed[0].exc_info is not None
+    assert failed[0].exc_info[0] is RuntimeError
+
+
 @pytest.fixture(autouse=True)
 def _quiet():
     logging.getLogger("livekit_slng").setLevel(logging.CRITICAL)
