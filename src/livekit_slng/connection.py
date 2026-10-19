@@ -70,8 +70,10 @@ def resolve_base_url(base_url: str | None) -> str | None:
 
     There is deliberately no built-in host: SLNG serves the API from regional
     hosts, and which region is right is the caller's decision, not the plugin's.
+    Surrounding whitespace is trimmed, as env files often leave a trailing
+    newline, so a blank value counts as missing.
     """
-    return base_url or os.environ.get("SLNG_BASE_URL") or None
+    return (base_url or "").strip() or os.environ.get("SLNG_BASE_URL", "").strip() or None
 
 
 def bridge_endpoint(base_url: str | None, service: Literal["stt", "tts"], model: str) -> str:

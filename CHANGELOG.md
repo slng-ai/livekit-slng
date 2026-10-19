@@ -19,6 +19,8 @@ livekit-plugins-slng" in the README for the three steps to switch.
   example `us-east.api.slng.ai`, or set `SLNG_BASE_URL`. Without either,
   construction raises a `ValueError`. Connections given as full endpoint URLs
   need neither.
+- Whitespace around `slng_base_url` or `SLNG_BASE_URL`, such as an env file's
+  trailing newline, is trimmed, and a blank value counts as missing.
 - TTS holds one WebSocket for the whole call instead of one per reply.
   `warm_standby_enabled` defaults to True: `prewarm()` opens the connection,
   and it counts as one concurrent SLNG session for the whole call, silences of

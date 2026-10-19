@@ -81,3 +81,27 @@ def test_fallback_candidates_resolve_against_the_same_host(no_env):
 def test_localhost_still_uses_plain_websockets(no_env):
     t = slng.TTS(api_key="k", model="deepgram/aura:2", voice="v", slng_base_url="localhost:18888")
     assert t._opts.model_endpoint.startswith("ws://localhost:18888/")
+
+
+def test_surrounding_whitespace_is_trimmed(monkeypatch):
+    monkeypatch.setenv("SLNG_BASE_URL", " eu-west.api.slng.ai\n")
+    t = slng.TTS(api_key="k", model="deepgram/aura:2", voice="v")
+    assert (
+        t._opts.model_endpoint == "wss://eu-west.api.slng.ai/v1/bridges/unmute/tts/deepgram/aura:2"
+    )
+    s = slng.STT(api_key="k", model="deepgram/nova:3", slng_base_url="\tsg.api.slng.ai ")
+    assert s._model_endpoint == STT_URL
+
+
+def test_a_blank_host_is_missing(monkeypatch):
+    monkeypatch.setenv("SLNG_BASE_URL", "  \n")
+    with pytest.raises(ValueError, match="slng_base_url is required"):
+        slng.TTS(api_key="k", model="deepgram/aura:2", voice="v")
+    with pytest.raises(ValueError, match="slng_base_url is required"):
+        slng.STT(api_key="k", model="deepgram/nova:3", slng_base_url=" ")
+
+
+def test_a_blank_argument_falls_back_to_the_env_var(monkeypatch):
+    monkeypatch.setenv("SLNG_BASE_URL", "sg.api.slng.ai")
+    t = slng.TTS(api_key="k", model="deepgram/aura:2", voice="v", slng_base_url=" ")
+    assert t._opts.model_endpoint == TTS_URL
