@@ -58,11 +58,15 @@ from .gateway_adapter import (
     build_external_tracking_headers,
     build_tts_init_payload,
     extract_error_status,
+    gateway_status_error,
     is_non_retryable_client_error,
     is_payload_too_large,
     merge_init_payload,
     normalize_region_override,
     normalize_world_part_override,
+    request_id_from_frame,
+    request_id_from_handshake,
+    with_request_id,
 )
 from .log import logger
 from .sentence_tokenizer import SentenceTokenizer, is_partial_head, separator_after
@@ -2032,6 +2036,9 @@ class ChunkedStream(tts.ChunkedStream):
         super().__init__(tts=tts, input_text=input_text, conn_options=conn_options)
         self._tts: TTS = tts
         self._opts = replace(tts._opts)
+        # SLNG's ID for this synthesis, from its `ready`, for the errors it
+        # raises. The local request_id below means nothing to SLNG support.
+        self._gateway_request_id: str | None = None
 
     def _emit_error(self, api_error: Exception, recoverable: bool) -> None:
         # Always recoverable: see SynthesizeStream._emit_error.
@@ -2039,6 +2046,7 @@ class ChunkedStream(tts.ChunkedStream):
 
     async def _run(self, output_emitter: tts.AudioEmitter) -> None:
         request_id = utils.shortuuid()
+        self._gateway_request_id = None
         output_emitter.initialize(
             request_id=request_id,
             sample_rate=self._opts.sample_rate,
@@ -2069,8 +2077,11 @@ class ChunkedStream(tts.ChunkedStream):
                         # The audio so far is a fragment; returning it as the
                         # whole synthesis would hide that it was cut off.
                         raise APIConnectionError(
-                            "SLNG websocket failed partway through synthesis: "
-                            f"{close_info['ws_error'] or 'connection lost'}"
+                            with_request_id(
+                                "SLNG websocket failed partway through synthesis: "
+                                f"{close_info['ws_error'] or 'connection lost'}",
+                                self._gateway_request_id,
+                            )
                         )
                     # Several bridge providers (Rime, Cartesia) terminate a
                     # segment by closing the socket. Mirror the streaming path:
@@ -2079,7 +2090,10 @@ class ChunkedStream(tts.ChunkedStream):
                     if audio_received:
                         output_emitter.flush()
                         break
-                    raise APIStatusError("SLNG websocket connection closed unexpectedly")
+                    raise APIStatusError(
+                        "SLNG websocket connection closed unexpectedly",
+                        request_id=self._gateway_request_id,
+                    )
 
                 if msg.type == aiohttp.WSMsgType.BINARY:
                     output_emitter.push(msg.data)
@@ -2101,6 +2115,10 @@ class ChunkedStream(tts.ChunkedStream):
                 if not isinstance(resp, dict):
                     continue
 
+                if resp.get("type") == "ready":
+                    self._gateway_request_id = request_id_from_frame(resp)
+                    continue
+
                 if "type" not in resp:
                     # Raw provider passthrough (e.g. ElevenLabs): {"audio", "isFinal"}.
                     is_final = _is_final_frame(resp)
@@ -2119,9 +2137,10 @@ class ChunkedStream(tts.ChunkedStream):
                         break
 
                     if resp.get("error") is not None:
-                        raise APIStatusError(
+                        raise gateway_status_error(
                             f"SLNG TTS error: {resp.get('error')}",
-                            status_code=_extract_error_status(resp) or -1,
+                            resp,
+                            request_id=self._gateway_request_id,
                         )
                     continue
 
@@ -2139,25 +2158,31 @@ class ChunkedStream(tts.ChunkedStream):
                     output_emitter.flush()
                     break
                 elif event.kind == "error":
-                    raise APIStatusError(
+                    raise gateway_status_error(
                         f"SLNG TTS error: {event.error}",
-                        status_code=event.error_status or -1,
+                        resp,
+                        request_id=self._gateway_request_id,
                     )
                 else:
                     logger.debug("[TTS] ignoring unknown message", extra={"lk.pii.data": resp})
         except (TimeoutError, asyncio.TimeoutError):
-            raise APITimeoutError() from None
+            raise APITimeoutError(
+                with_request_id("Request timed out.", self._gateway_request_id)
+            ) from None
         except aiohttp.ClientResponseError as e:
+            # A refused upgrade: the server's ID for it is in its headers.
             raise APIStatusError(
                 message=e.message,
                 status_code=e.status,
-                request_id=request_id,
+                request_id=request_id_from_handshake(e),
                 body=None,
             ) from None
         except (APIStatusError, APIConnectionError):
             raise
         except Exception as e:
-            raise APIConnectionError() from e
+            raise APIConnectionError(
+                with_request_id("Connection error.", self._gateway_request_id)
+            ) from e
         finally:
             if ws is not None:
                 await _close_ws(ws, context="chunked_synthesis")
@@ -2182,6 +2207,10 @@ class SynthesizeStream(tts.SynthesizeStream):
         # Text pushed before the segment's first letter or digit; see push_text.
         self._leading_text = ""
         self._segment_has_speech = False
+        # SLNG's ID for the connection the current attempt runs on, once its
+        # `ready` has been read, for the errors this stream raises. The local
+        # request_id in _run means nothing to SLNG support.
+        self._gateway_request_id: str | None = None
         logger.debug("[TTS] SynthesizeStream.__init__ DONE")
 
     def push_text(self, token: str) -> None:
@@ -2278,18 +2307,23 @@ class SynthesizeStream(tts.SynthesizeStream):
         try:
             await asyncio.gather(*tasks)
         except (TimeoutError, asyncio.TimeoutError):
-            raise APITimeoutError() from None
+            raise APITimeoutError(
+                with_request_id("Request timed out.", self._gateway_request_id)
+            ) from None
         except aiohttp.ClientResponseError as e:
+            # A refused upgrade: the server's ID for it is in its headers.
             raise APIStatusError(
                 message=e.message,
                 status_code=e.status,
-                request_id=request_id,
+                request_id=request_id_from_handshake(e),
                 body=None,
             ) from None
         except (APIStatusError, APIConnectionError):
             raise
         except Exception as e:
-            raise APIConnectionError() from e
+            raise APIConnectionError(
+                with_request_id("Connection error.", self._gateway_request_id)
+            ) from e
         finally:
             await utils.aio.gracefully_cancel(*tasks)
 
@@ -2458,7 +2492,12 @@ class SynthesizeStream(tts.SynthesizeStream):
             fails rather than passing as complete.
             """
             if any(_contains_speech(queued.text) for queued in pending_frames):
-                raise APIConnectionError("SLNG ended the reply before all of its text was sent")
+                raise APIConnectionError(
+                    with_request_id(
+                        "SLNG ended the reply before all of its text was sent",
+                        self._gateway_request_id,
+                    )
+                )
             pending_frames.clear()
 
         async def write_pending(conn: _HeldConnection) -> None:
@@ -2678,8 +2717,11 @@ class SynthesizeStream(tts.SynthesizeStream):
                         # the audio so far is a fragment. Ending the segment
                         # here would pass it off as the whole reply.
                         raise APIConnectionError(
-                            f"SLNG websocket failed after {audio_chunks_seen} audio chunk(s): "
-                            f"{close_info['ws_error'] or 'connection lost'}"
+                            with_request_id(
+                                f"SLNG websocket failed after {audio_chunks_seen} audio "
+                                f"chunk(s): {close_info['ws_error'] or 'connection lost'}",
+                                self._gateway_request_id,
+                            )
                         )
                     if audio_chunks_seen > 0 and ws_close_code not in _NORMAL_CLOSE_CODES:
                         # Closed mid-reply for a reason, such as a restart
@@ -2687,8 +2729,11 @@ class SynthesizeStream(tts.SynthesizeStream):
                         # (1008): the audio so far is a fragment, however the
                         # connection ended.
                         raise APIConnectionError(
-                            f"SLNG websocket closed with code {ws_close_code} after "
-                            f"{audio_chunks_seen} audio chunk(s)"
+                            with_request_id(
+                                f"SLNG websocket closed with code {ws_close_code} after "
+                                f"{audio_chunks_seen} audio chunk(s)",
+                                self._gateway_request_id,
+                            )
                         )
                     if audio_chunks_seen > 0:
                         # No audio_end arrived, so whether the reply finished
@@ -2709,7 +2754,10 @@ class SynthesizeStream(tts.SynthesizeStream):
                         break
                     if conn.reused:
                         raise _StaleConnection()
-                    raise APIStatusError("SLNG websocket connection closed unexpectedly")
+                    raise APIStatusError(
+                        "SLNG websocket connection closed unexpectedly",
+                        request_id=self._gateway_request_id,
+                    )
 
                 # Binary is what the bridge sends; the JSON audio frames below
                 # are the compatibility path for providers it passes through
@@ -2734,6 +2782,7 @@ class SynthesizeStream(tts.SynthesizeStream):
                             ready_ms = _elapsed_ms(segment_started_at)
                         self._tts._note_ready(conn, resp)
                         gateway_request_id = conn.gateway_request_id
+                        self._gateway_request_id = conn.gateway_request_id
                         gateway_session_id = conn.gateway_session_id
                         self._tts._emit_plugin_event(
                             "gateway.session",
@@ -2763,9 +2812,10 @@ class SynthesizeStream(tts.SynthesizeStream):
                             break
 
                         if resp.get("error") is not None:
-                            raise APIStatusError(
+                            raise gateway_status_error(
                                 f"SLNG TTS error: {resp.get('error')}",
-                                status_code=_extract_error_status(resp) or -1,
+                                resp,
+                                request_id=self._gateway_request_id,
                             )
                         continue
 
@@ -2790,9 +2840,10 @@ class SynthesizeStream(tts.SynthesizeStream):
                         break
 
                     elif event.kind == "error":
-                        raise APIStatusError(
+                        raise gateway_status_error(
                             f"SLNG TTS error: {event.error}",
-                            status_code=event.error_status or -1,
+                            resp,
+                            request_id=self._gateway_request_id,
                         )
 
                     else:
@@ -2807,8 +2858,12 @@ class SynthesizeStream(tts.SynthesizeStream):
                 input_sent_event.clear()
                 flush_sent = False
                 reply_ended = False
+                # The ID belongs to a connection, so an attempt that fails to
+                # get one must not report the last attempt's.
+                self._gateway_request_id = None
                 acquire_started_at = time.perf_counter()
                 conn = await self._tts._acquire_connection(timeout=self._conn_options.timeout)
+                self._gateway_request_id = conn.gateway_request_id
                 # Reported in this reply's TTSMetrics.
                 self._acquire_time = time.perf_counter() - acquire_started_at
                 self._connection_reused = conn.reused
@@ -2833,7 +2888,10 @@ class SynthesizeStream(tts.SynthesizeStream):
                     in_flight = False
                     if ws_reconnects > 1:
                         raise APIConnectionError(
-                            "SLNG websocket closed before producing audio"
+                            with_request_id(
+                                "SLNG websocket closed before producing audio",
+                                self._gateway_request_id,
+                            )
                         ) from exc
                     logger.info(
                         "[TTS] reused websocket was dead, reconnecting and replaying segment",
@@ -2913,6 +2971,12 @@ class _FallbackStreamBase:
         """
         return float(getattr(self._stream, "_started_time", 0.0) or 0.0)
 
+    @property
+    def _gateway_request_id(self) -> str | None:
+        """SLNG's ID for the current attempt's connection, once it has one."""
+        request_id = getattr(self._stream, "_gateway_request_id", None)
+        return request_id if isinstance(request_id, str) else None
+
     def __aiter__(self) -> _FallbackStreamBase:
         return self
 
@@ -2976,14 +3040,22 @@ class _FallbackStreamBase:
             except StopAsyncIteration:
                 if self._started or not self._expects_audio():
                     raise
-                await self._handle_failure(APIConnectionError("TTS produced no audio"))
+                await self._handle_failure(
+                    APIConnectionError(
+                        with_request_id("TTS produced no audio", self._gateway_request_id)
+                    )
+                )
                 continue
             except (TimeoutError, asyncio.TimeoutError):
                 if self._started or self._deadline is None:
                     raise
                 await self._handle_failure(
                     APITimeoutError(
-                        f"SLNG TTS produced no audio within {self._parent._first_audio_timeout_s} s"
+                        with_request_id(
+                            "SLNG TTS produced no audio within "
+                            f"{self._parent._first_audio_timeout_s} s",
+                            self._gateway_request_id,
+                        )
                     ),
                     allow_retry=False,
                 )

@@ -50,12 +50,14 @@ from .gateway_adapter import (
     build_external_tracking_headers,
     build_stt_init_payload,
     error_details,
-    extract_error_status,
+    gateway_status_error,
     is_non_retryable_client_error,
     is_payload_too_large,
     merge_init_payload,
     normalize_region_override,
     normalize_world_part_override,
+    request_id_from_frame,
+    request_id_from_handshake,
 )
 from .log import logger
 
@@ -119,10 +121,6 @@ def _extract_error_text(data: dict[str, object]) -> str:
                 return nested_message
 
     return "Unknown error"
-
-
-def _extract_error_code(data: dict[str, object]) -> int | None:
-    return extract_error_status(data)
 
 
 @dataclass
@@ -542,6 +540,9 @@ class SpeechStream(stt.SpeechStream):
         self._user_state: Literal["speaking", "listening"] | None = None
         self._has_spoken_since_last_response = False
         self._final_timeout_allowed = True
+        # SLNG's ID for the current connection, from its `ready`, for the
+        # errors this stream raises.
+        self._gateway_request_id: str | None = None
 
     def update_options(
         self,
@@ -1018,14 +1019,23 @@ class SpeechStream(stt.SpeechStream):
                     aiohttp.WSMsgType.CLOSING,
                 ):
                     if pending_non_empty_transcript:
-                        raise APIStatusError("SLNG STT closed before final transcript")
+                        raise APIStatusError(
+                            "SLNG STT closed before final transcript",
+                            request_id=self._gateway_request_id,
+                        )
                     if awaiting_final:
-                        raise APIStatusError("SLNG STT closed while awaiting final transcript")
+                        raise APIStatusError(
+                            "SLNG STT closed while awaiting final transcript",
+                            request_id=self._gateway_request_id,
+                        )
                     if input_finished or protocol_close_sent:
                         return True
                     if not buffered_audio:
                         return False
-                    raise APIStatusError("SLNG connection closed unexpectedly")
+                    raise APIStatusError(
+                        "SLNG connection closed unexpectedly",
+                        request_id=self._gateway_request_id,
+                    )
 
                 if msg.type != aiohttp.WSMsgType.TEXT:
                     continue
@@ -1080,11 +1090,11 @@ class SpeechStream(stt.SpeechStream):
                     msg_type = data["type"]
 
                 if msg_type in ("Error", "error"):
-                    message = _extract_error_text(data)
-                    status_code = _extract_error_code(data)
-                    if status_code is not None:
-                        raise APIStatusError(f"SLNG STT error: {message}", status_code=status_code)
-                    raise APIStatusError(f"SLNG STT error: {message}")
+                    raise gateway_status_error(
+                        f"SLNG STT error: {_extract_error_text(data)}",
+                        data,
+                        request_id=self._gateway_request_id,
+                    )
 
                 if msg_type in ("partial_transcript", "final_transcript"):
                     text = data.get("transcript", "")
@@ -1385,7 +1395,8 @@ class SpeechStream(stt.SpeechStream):
                             if silent_reconnects >= _MAX_SILENT_RECONNECTS:
                                 raise APIStatusError(
                                     "SLNG STT closed the connection repeatedly"
-                                    " without producing transcripts"
+                                    " without producing transcripts",
+                                    request_id=self._gateway_request_id,
                                 )
                         retry_connection = True
                         break
@@ -1489,6 +1500,8 @@ class SpeechStream(stt.SpeechStream):
         connection = self._connections[self._active_endpoint_index]
         headers.update(connection.headers)
 
+        # The ID belongs to a connection, so a new one starts without any.
+        self._gateway_request_id = None
         # Don't enable compression - e2e tests work without it and compress=15
         # was causing handshake errors with Deepgram Nova endpoint
         try:
@@ -1501,6 +1514,15 @@ class SpeechStream(stt.SpeechStream):
             )
         except (TimeoutError, asyncio.TimeoutError, aiohttp.ClientConnectorError) as e:
             raise APIConnectionError("failed to connect to SLNG STT") from e
+        except aiohttp.ClientResponseError as e:
+            # A refused upgrade: the server's ID for it is in its headers. Its
+            # status still decides retry and failover, as it did before.
+            raise APIStatusError(
+                message=e.message,
+                status_code=e.status,
+                request_id=request_id_from_handshake(e),
+                body=None,
+            ) from e
 
         init_message = build_stt_init_payload(
             model=model,
@@ -1579,23 +1601,18 @@ class SpeechStream(stt.SpeechStream):
                 self._emit_session_event(data)
                 return
             if msg_type in ("Error", "error"):
-                message = _extract_error_text(data)
-                status_code = _extract_error_code(data)
-                if status_code is not None:
-                    raise APIStatusError(
-                        f"SLNG STT error: {message}",
-                        status_code=status_code,
-                    )
-                raise APIStatusError(f"SLNG STT error: {message}")
+                raise gateway_status_error(
+                    f"SLNG STT error: {_extract_error_text(data)}",
+                    data,
+                    request_id=self._gateway_request_id,
+                )
 
     def _emit_session_event(self, data: dict[str, Any]) -> None:
+        """Record a `ready` frame's request ID and report the session it opened."""
+        self._gateway_request_id = request_id_from_frame(data)
         self._slng_stt._emit_plugin_event(
             "gateway.session",
-            gateway_request_id=(
-                data.get("slng_request_id")
-                if isinstance(data.get("slng_request_id"), str)
-                else None
-            ),
+            gateway_request_id=self._gateway_request_id,
             gateway_session_id=(
                 data.get("session_id") if isinstance(data.get("session_id"), str) else None
             ),

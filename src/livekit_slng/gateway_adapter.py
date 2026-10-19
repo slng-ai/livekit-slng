@@ -4,6 +4,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from livekit.agents import APIStatusError
+
 _EXTERNAL_TRACKING_ID_RE = re.compile(r"[\x00-\x1f\x7f,]")
 _MODEL_IDENTIFIER_RE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+"
@@ -112,6 +114,40 @@ def extract_error_status(frame: Mapping[str, object]) -> int | None:
         if status is not None:
             return status
     return None
+
+
+def request_id_from_frame(frame: Mapping[str, object]) -> str | None:
+    """SLNG's request ID from a `ready` or an error frame, if it carries one."""
+    value = frame.get("slng_request_id")
+    return value if isinstance(value, str) and value else None
+
+
+def request_id_from_handshake(exc: BaseException) -> str | None:
+    """SLNG's request ID from a refused WebSocket upgrade's ``X-Slng-Request-Id`` header."""
+    headers = getattr(exc, "headers", None)
+    value = headers.get("X-Slng-Request-Id") if isinstance(headers, Mapping) else None
+    return value if isinstance(value, str) and value else None
+
+
+def with_request_id(message: str, request_id: str | None) -> str:
+    """``message`` naming SLNG's request ID, for an error type with no field for it."""
+    return f"{message} (SLNG request id: {request_id})" if request_id else message
+
+
+def gateway_status_error(
+    message: str, frame: Mapping[str, object], *, request_id: str | None
+) -> APIStatusError:
+    """An error frame as the error to raise, with its status and SLNG's request ID.
+
+    The frame's own ``slng_request_id`` wins over ``request_id``, which is the
+    one the connection's `ready` gave. A frame with no status keeps
+    ``APIStatusError``'s default.
+    """
+    status = extract_error_status(frame)
+    request_id = request_id_from_frame(frame) or request_id
+    if status is None:
+        return APIStatusError(message, request_id=request_id)
+    return APIStatusError(message, status_code=status, request_id=request_id)
 
 
 def validate_model_identifier(model: str) -> str:

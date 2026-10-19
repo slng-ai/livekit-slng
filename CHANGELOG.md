@@ -57,6 +57,12 @@ livekit-plugins-slng" in the README for the three steps to switch.
   replaying the abandoned utterance.
 - A TTS `encoding` keyword argument other than `linear16` raises a
   `ValueError`.
+- Errors carry SLNG's request ID, which SLNG support can look up, instead of a
+  local one: from the error frame, the connection's `ready`, or a refused
+  upgrade's `X-Slng-Request-Id` header. It is the `request_id` of an
+  `APIStatusError` (None when the server gave none), and ends the message of
+  an `APIConnectionError` or `APITimeoutError`. A refused STT upgrade raises
+  `APIStatusError` instead of aiohttp's `WSServerHandshakeError`.
 
 ### Added
 
