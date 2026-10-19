@@ -57,6 +57,7 @@ from .connection import (
 from .gateway_adapter import (
     build_external_tracking_headers,
     build_tts_init_payload,
+    describe_close,
     extract_error_status,
     gateway_status_error,
     is_non_retryable_client_error,
@@ -209,6 +210,11 @@ def _transport_failed(ws: aiohttp.ClientWebSocketResponse, msg: aiohttp.WSMessag
         msg.type is aiohttp.WSMsgType.CLOSED
         and getattr(ws, "close_code", None) == aiohttp.WSCloseCode.ABNORMAL_CLOSURE
     )
+
+
+def _close_text(close_info: dict[str, object]) -> str:
+    """The close code and reason from ``_describe_ws_end``, for an error message."""
+    return describe_close(close_info["ws_close_code"], close_info["ws_close_reason"])
 
 
 def _log_ws_end(
@@ -2079,7 +2085,8 @@ class ChunkedStream(tts.ChunkedStream):
                         raise APIConnectionError(
                             with_request_id(
                                 "SLNG websocket failed partway through synthesis: "
-                                f"{close_info['ws_error'] or 'connection lost'}",
+                                f"{close_info['ws_error'] or 'connection lost'} "
+                                f"({_close_text(close_info)})",
                                 self._gateway_request_id,
                             )
                         )
@@ -2091,7 +2098,8 @@ class ChunkedStream(tts.ChunkedStream):
                         output_emitter.flush()
                         break
                     raise APIStatusError(
-                        "SLNG websocket connection closed unexpectedly",
+                        "SLNG websocket connection closed unexpectedly "
+                        f"({_close_text(close_info)})",
                         request_id=self._gateway_request_id,
                     )
 
@@ -2719,7 +2727,8 @@ class SynthesizeStream(tts.SynthesizeStream):
                         raise APIConnectionError(
                             with_request_id(
                                 f"SLNG websocket failed after {audio_chunks_seen} audio "
-                                f"chunk(s): {close_info['ws_error'] or 'connection lost'}",
+                                f"chunk(s): {close_info['ws_error'] or 'connection lost'} "
+                                f"({_close_text(close_info)})",
                                 self._gateway_request_id,
                             )
                         )
@@ -2730,8 +2739,8 @@ class SynthesizeStream(tts.SynthesizeStream):
                         # connection ended.
                         raise APIConnectionError(
                             with_request_id(
-                                f"SLNG websocket closed with code {ws_close_code} after "
-                                f"{audio_chunks_seen} audio chunk(s)",
+                                f"SLNG websocket closed after {audio_chunks_seen} audio "
+                                f"chunk(s) ({_close_text(close_info)})",
                                 self._gateway_request_id,
                             )
                         )
@@ -2755,7 +2764,8 @@ class SynthesizeStream(tts.SynthesizeStream):
                     if conn.reused:
                         raise _StaleConnection()
                     raise APIStatusError(
-                        "SLNG websocket connection closed unexpectedly",
+                        "SLNG websocket connection closed unexpectedly "
+                        f"({_close_text(close_info)})",
                         request_id=self._gateway_request_id,
                     )
 

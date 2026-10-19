@@ -49,6 +49,7 @@ from .connection import (
 from .gateway_adapter import (
     build_external_tracking_headers,
     build_stt_init_payload,
+    describe_close,
     error_details,
     gateway_status_error,
     is_non_retryable_client_error,
@@ -101,6 +102,13 @@ def _safe_error_code(exc: BaseException) -> int | None:
         if isinstance(value, int) and not isinstance(value, bool):
             return value
     return None
+
+
+def _close_text(ws: aiohttp.ClientWebSocketResponse, msg: aiohttp.WSMessage) -> str:
+    """How a read loop's connection closed, for an error message: code and reason."""
+    if msg.type is aiohttp.WSMsgType.CLOSE:
+        return describe_close(msg.data, msg.extra)
+    return describe_close(getattr(ws, "close_code", None), None)
 
 
 def _extract_error_text(data: dict[str, object]) -> str:
@@ -637,6 +645,8 @@ class SpeechStream(stt.SpeechStream):
         wait_reconnect: asyncio.Task[bool] | None = None
         candidate_attempts = 0
         silent_reconnects = 0
+        # How the last connection closed, for the error that gives up on them.
+        last_close: str | None = None
         same_endpoint_replays = 0
         connection_had_transcript = False
         recover_primary_after_final = False
@@ -799,12 +809,14 @@ class SpeechStream(stt.SpeechStream):
             nonlocal pending_switch_succeeded, sent_audio_since_finalize
             nonlocal candidate_attempts, silent_reconnects, same_endpoint_replays
             from_model = current_model()
-            exc_info = (
-                (type(exc), exc, exc.__traceback__)
-                if exc is not None and exc.__traceback__ is not None
-                else None
-            )
             details = error_details(exc)
+            # The error's message can quote the provider's, so it goes under a
+            # PII key, and there is no traceback: its last line is the message.
+            failure_fields = {
+                "error_type": details["error_type"],
+                "error_status": details["error_code"],
+                "lk.pii.error": details["error_message"],
+            }
             next_index = self._candidate_state.advance(self._active_endpoint_index)
             if next_index is None:
                 # No further fallback candidate. If the failure is transient
@@ -828,9 +840,9 @@ class SpeechStream(stt.SpeechStream):
                         "(reason=%s attempt=%s error=%s): %s",
                         reason,
                         same_endpoint_replays,
-                        details["error_message"],
+                        details["error_type"],
                         from_model,
-                        exc_info=exc_info,
+                        extra=failure_fields,
                     )
                     input_finished = False
                     closing = False
@@ -843,9 +855,9 @@ class SpeechStream(stt.SpeechStream):
                     "STT fallback exhausted (reason=%s timeout_s=%s error=%s): from=%s",
                     reason,
                     timeout_s,
-                    details["error_message"],
+                    details["error_type"],
                     from_model,
-                    exc_info=exc_info,
+                    extra=failure_fields,
                 )
                 self._slng_stt._emit_plugin_event(
                     "fallback.exhausted",
@@ -864,10 +876,10 @@ class SpeechStream(stt.SpeechStream):
                 "STT attempt failed (reason=%s timeout_s=%s error=%s): switching %s -> %s",
                 reason,
                 timeout_s,
-                details["error_message"],
+                details["error_type"],
                 from_model,
                 to_model,
-                exc_info=exc_info,
+                extra=failure_fields,
             )
             self._slng_stt._emit_plugin_event(
                 "fallback.attempt_failed",
@@ -1010,7 +1022,7 @@ class SpeechStream(stt.SpeechStream):
             nonlocal awaiting_final, pending_non_empty_transcript, speech_started
             nonlocal recover_primary_after_final, candidate_attempts
             nonlocal finalize_requested_for_buffer, silent_reconnects
-            nonlocal connection_had_transcript, same_endpoint_replays
+            nonlocal connection_had_transcript, same_endpoint_replays, last_close
             while True:
                 msg = await ws.receive()
                 if msg.type in (
@@ -1018,14 +1030,15 @@ class SpeechStream(stt.SpeechStream):
                     aiohttp.WSMsgType.CLOSE,
                     aiohttp.WSMsgType.CLOSING,
                 ):
+                    last_close = _close_text(ws, msg)
                     if pending_non_empty_transcript:
                         raise APIStatusError(
-                            "SLNG STT closed before final transcript",
+                            f"SLNG STT closed before final transcript ({last_close})",
                             request_id=self._gateway_request_id,
                         )
                     if awaiting_final:
                         raise APIStatusError(
-                            "SLNG STT closed while awaiting final transcript",
+                            f"SLNG STT closed while awaiting final transcript ({last_close})",
                             request_id=self._gateway_request_id,
                         )
                     if input_finished or protocol_close_sent:
@@ -1033,7 +1046,7 @@ class SpeechStream(stt.SpeechStream):
                     if not buffered_audio:
                         return False
                     raise APIStatusError(
-                        "SLNG connection closed unexpectedly",
+                        f"SLNG connection closed unexpectedly ({last_close})",
                         request_id=self._gateway_request_id,
                     )
 
@@ -1395,7 +1408,7 @@ class SpeechStream(stt.SpeechStream):
                             if silent_reconnects >= _MAX_SILENT_RECONNECTS:
                                 raise APIStatusError(
                                     "SLNG STT closed the connection repeatedly"
-                                    " without producing transcripts",
+                                    f" without producing transcripts (last: {last_close})",
                                     request_id=self._gateway_request_id,
                                 )
                         retry_connection = True
@@ -1584,7 +1597,7 @@ class SpeechStream(stt.SpeechStream):
                 aiohttp.WSMsgType.CLOSE,
                 aiohttp.WSMsgType.CLOSING,
             ):
-                raise APIConnectionError("SLNG STT closed before ready")
+                raise APIConnectionError(f"SLNG STT closed before ready ({_close_text(ws, msg)})")
 
             if msg.type != aiohttp.WSMsgType.TEXT:
                 continue

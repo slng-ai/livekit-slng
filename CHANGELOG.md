@@ -63,6 +63,9 @@ livekit-plugins-slng" in the README for the three steps to switch.
   `APIStatusError` (None when the server gave none), and ends the message of
   an `APIConnectionError` or `APITimeoutError`. A refused STT upgrade raises
   `APIStatusError` instead of aiohttp's `WSServerHandshakeError`.
+- Every error raised for a closed connection names the close code and the
+  server's close reason, cut to 200 characters. The STT failover logs put the
+  error's text under `lk.pii.error` instead of in the message.
 
 ### Added
 

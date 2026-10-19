@@ -13,6 +13,7 @@ _MODEL_IDENTIFIER_RE = re.compile(
 )
 _RETRYABLE_CLIENT_STATUS_CODES = {408, 409, 425, 429}
 _ERROR_MESSAGE_MAX_LEN = 500
+_CLOSE_REASON_MAX_LEN = 200
 
 # The gateway's error codes, mapped to the HTTP status the retry logic reads.
 # A code missing here yields no status, and a status-less error is retried on
@@ -132,6 +133,21 @@ def request_id_from_handshake(exc: BaseException) -> str | None:
 def with_request_id(message: str, request_id: str | None) -> str:
     """``message`` naming SLNG's request ID, for an error type with no field for it."""
     return f"{message} (SLNG request id: {request_id})" if request_id else message
+
+
+def describe_close(code: object, reason: object) -> str:
+    """A WebSocket close for an error message: its code, and the reason the server gave.
+
+    The server writes the reason, not the caller, so it carries no reply text.
+    It is cut short all the same, as an error message is no place for a long one.
+    """
+    text = f"close code {code}" if code is not None else "no close code"
+    if isinstance(reason, str) and reason.strip():
+        reason = reason.strip()
+        if len(reason) > _CLOSE_REASON_MAX_LEN:
+            reason = f"{reason[:_CLOSE_REASON_MAX_LEN]}..."
+        text += f", reason: {reason}"
+    return text
 
 
 def gateway_status_error(
