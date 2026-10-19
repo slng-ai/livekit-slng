@@ -1,4 +1,5 @@
 # Copyright 2025 LiveKit, Inc.
+# Modifications copyright 2026 SLNG.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,7 +29,6 @@ from types import TracebackType
 from typing import Any, Literal, NamedTuple
 
 import aiohttp
-
 from livekit import rtc
 from livekit.agents import (
     APIConnectionError,

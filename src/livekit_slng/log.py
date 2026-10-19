@@ -1,4 +1,5 @@
 # Copyright 2023 LiveKit, Inc.
+# Modifications copyright 2026 SLNG.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,4 +15,4 @@
 
 import logging
 
-logger = logging.getLogger("livekit.plugins.slng")
+logger = logging.getLogger("livekit_slng")
