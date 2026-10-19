@@ -119,3 +119,11 @@ def test_a_blank_api_key_is_missing(monkeypatch):
         slng.TTS(model="deepgram/aura:2", voice="v")
     with pytest.raises(ValueError, match="api_key"):
         slng.STT(model="deepgram/nova:3")
+
+
+def test_a_blank_api_key_argument_falls_back_to_the_env_var(monkeypatch):
+    monkeypatch.setenv("SLNG_API_KEY", "key-from-env")
+    assert (
+        slng.TTS(api_key="  ", model="deepgram/aura:2", voice="v")._opts.api_key == "key-from-env"
+    )
+    assert slng.STT(api_key=" \n", model="deepgram/nova:3")._api_token == "key-from-env"

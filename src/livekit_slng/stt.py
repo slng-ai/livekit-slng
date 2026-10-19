@@ -253,8 +253,11 @@ class STT(stt.STT):
             )
         # Trimmed, like the host: an env file's trailing newline would break the header.
         resolved_key = (
-            api_key or api_token or os.environ.get("SLNG_API_KEY") or ""
-        ).strip() or None
+            (api_key or "").strip()
+            or (api_token or "").strip()
+            or os.environ.get("SLNG_API_KEY", "").strip()
+            or None
+        )
         if not resolved_key:
             raise ValueError("api_key is required, or set the SLNG_API_KEY environment variable")
         slng_base_url = resolve_base_url(slng_base_url)
@@ -821,14 +824,20 @@ class SpeechStream(stt.SpeechStream):
             from_model = current_model()
             details = error_details(exc)
             # An API error's message can quote the provider's, so it goes under
-            # a PII key, with no traceback, whose last line is the message. Any
-            # other exception is a bug this failover absorbs: it keeps its trace.
+            # a PII key, with no traceback, whose last line is the message. A
+            # timeout is routine. Any other exception is a bug this failover
+            # absorbs: it keeps its trace.
             failure_fields = {
                 "error_type": details["error_type"],
                 "error_status": details["error_code"],
                 "lk.pii.error": details["error_message"],
             }
-            bug_trace = exc if exc is not None and not isinstance(exc, APIError) else None
+            bug_trace = (
+                exc
+                if exc is not None
+                and not isinstance(exc, (APIError, TimeoutError, asyncio.TimeoutError))
+                else None
+            )
             next_index = self._candidate_state.advance(self._active_endpoint_index)
             if next_index is None:
                 # No further fallback candidate. If the failure is transient
@@ -1556,7 +1565,7 @@ class SpeechStream(stt.SpeechStream):
         except aiohttp.ClientConnectorError as e:
             raise APIConnectionError("failed to connect to SLNG STT") from e
         except aiohttp.ClientResponseError as e:
-            raise handshake_status_error("STT", e) from e
+            raise handshake_status_error("STT", e) from None
 
         init_message = build_stt_init_payload(
             model=model,

@@ -21,6 +21,7 @@ import contextlib
 import json
 import logging
 import os
+import sys
 import time
 import weakref
 from collections.abc import Callable, Coroutine
@@ -241,15 +242,20 @@ async def _receive_by(ws: aiohttp.ClientWebSocketResponse, deadline: float) -> a
     inside ``receive()`` and restarts that timeout on each one, so a server that
     pings, or this plugin's own heartbeat, can keep it from ever firing.
 
-    Nor ``asyncio.wait_for``: before Python 3.12 it can swallow a cancellation
+    Nor ``asyncio.wait_for`` before Python 3.12: it can swallow a cancellation
     that arrives as the read completes, so an idle reader told to stop reads on,
-    and the reply waiting for it to stop waits forever. A cancellation here
+    and the reply waiting for it to stop waits forever. There, a cancellation
     always propagates, and the read is over before this returns or raises, so
-    the socket never has two readers.
+    the socket never has two readers. The cost is a frame that arrives in that
+    same instant: it is dropped, where 3.12's ``wait_for`` leaves it for the
+    next reader, which is why 3.12 and later keep ``wait_for``.
     """
+    timeout = max(deadline - time.perf_counter(), 0.001)
+    if sys.version_info >= (3, 12):
+        return await asyncio.wait_for(ws.receive(), timeout=timeout)
     receive = asyncio.ensure_future(ws.receive())
     try:
-        done, _ = await asyncio.wait({receive}, timeout=max(deadline - time.perf_counter(), 0.001))
+        done, _ = await asyncio.wait({receive}, timeout=timeout)
     finally:
         if not receive.done():
             receive.cancel()
@@ -735,7 +741,7 @@ class TTS(tts.TTS):
                 "or connections=[...] instead."
             )
         # Trimmed, like the host: an env file's trailing newline would break the header.
-        resolved_key = (api_key or os.environ.get("SLNG_API_KEY") or "").strip() or None
+        resolved_key = (api_key or "").strip() or os.environ.get("SLNG_API_KEY", "").strip() or None
         if not resolved_key:
             raise ValueError("api_key is required, or set the SLNG_API_KEY environment variable")
         slng_base_url = resolve_base_url(slng_base_url)
