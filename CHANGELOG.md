@@ -86,6 +86,9 @@ livekit-plugins-slng" in the README for the three steps to switch.
   `partial_head_min_chars` (default 25) sets the shortest opening.
 - `TTSMetrics` report `connection_reused` and `acquire_time` for every reply.
 - livekit's `tts.FallbackAdapter` can wrap `slng.TTS`.
+- `project_id` on STT and TTS: an SLNG project UUID, sent as the
+  `X-SLNG-Project-Id` header to select the project that usage is billed and
+  limited under. It is optional, and nothing is sent when it is omitted.
 - The gateway's canonical error codes decide retry and failover, in both of
   its error formats: a provider's refused request, rejected credential or
   used-up quota moves on to the next model without a retry, while rate limits,

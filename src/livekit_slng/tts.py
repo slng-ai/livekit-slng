@@ -654,6 +654,7 @@ class TTS(tts.TTS):
         world_part_override: str | None = None,
         external_agent_id: str | None = None,
         external_session_id: str | None = None,
+        project_id: str | None = None,
         language: NotGivenOr[str] = NOT_GIVEN,
         sample_rate: int = 24000,
         speed: NotGivenOr[float] = NOT_GIVEN,
@@ -695,6 +696,9 @@ class TTS(tts.TTS):
                 the ``X-SLNG-Agent-Id`` header (max 128 chars).
             external_session_id: Optional tracking ID attached to usage events as
                 the ``X-SLNG-Session-Id`` header (max 128 chars).
+            project_id: Optional SLNG project UUID, sent as the
+                ``X-SLNG-Project-Id`` header. Selects the project that usage is
+                billed and limited under. Nothing is sent when it is omitted.
             voice: Required voice identifier.
             language: Optional language code. When omitted, the model's catalog
                 default applies.
@@ -796,6 +800,7 @@ class TTS(tts.TTS):
             build_external_tracking_headers(
                 external_agent_id=external_agent_id,
                 external_session_id=external_session_id,
+                project_id=project_id,
             )
         )
         if provider_api_key is not None:
@@ -937,6 +942,7 @@ class TTS(tts.TTS):
                     world_part_override=world_part_override,
                     external_agent_id=external_agent_id,
                     external_session_id=external_session_id,
+                    project_id=project_id,
                     language=language,
                     sample_rate=sample_rate,
                     speed=speed,

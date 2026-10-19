@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from collections.abc import Mapping
 from typing import Any
 
@@ -343,6 +344,7 @@ def build_external_tracking_headers(
     *,
     external_agent_id: str | None,
     external_session_id: str | None,
+    project_id: str | None = None,
 ) -> dict[str, str]:
     headers: dict[str, str] = {}
     agent_id = _validate_external_tracking_id(
@@ -353,10 +355,18 @@ def build_external_tracking_headers(
         external_session_id,
         name="external_session_id",
     )
+    project = _validate_external_tracking_id(project_id, name="project_id")
+    if project is not None:
+        try:
+            project = str(uuid.UUID(project))
+        except ValueError:
+            raise ValueError("project_id must be a UUID") from None
     if agent_id is not None:
         headers["X-SLNG-Agent-Id"] = agent_id
     if session_id is not None:
         headers["X-SLNG-Session-Id"] = session_id
+    if project is not None:
+        headers["X-SLNG-Project-Id"] = project
     return headers
 
 

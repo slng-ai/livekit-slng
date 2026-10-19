@@ -178,6 +178,7 @@ class STT(stt.STT):
         world_part_override: str | None = None,
         external_agent_id: str | None = None,
         external_session_id: str | None = None,
+        project_id: str | None = None,
         sample_rate: int = 16000,
         encoding: NotGivenOr[STTEncoding] = NOT_GIVEN,
         buffer_size_seconds: float = DEFAULT_BUFFER_SIZE_SECONDS,
@@ -221,6 +222,9 @@ class STT(stt.STT):
                 the ``X-SLNG-Agent-Id`` header (max 128 chars).
             external_session_id: Optional tracking ID attached to usage events as
                 the ``X-SLNG-Session-Id`` header (max 128 chars).
+            project_id: Optional SLNG project UUID, sent as the
+                ``X-SLNG-Project-Id`` header. Selects the project that usage is
+                billed and limited under. Nothing is sent when it is omitted.
             sample_rate: Audio sample rate (default: 16000)
             encoding: Audio encoding format
             buffer_size_seconds: Buffer size in seconds
@@ -354,6 +358,7 @@ class STT(stt.STT):
             build_external_tracking_headers(
                 external_agent_id=external_agent_id,
                 external_session_id=external_session_id,
+                project_id=project_id,
             )
         )
         if provider_api_key is not None:

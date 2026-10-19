@@ -118,6 +118,13 @@ use `world_part_override` (for example `"eu"`), which maps to the gateway's
 `X-World-Part-Override` header. `region_override` takes precedence when both
 are set.
 
+## Usage tracking
+
+Three optional settings on both `STT` and `TTS` label the traffic for SLNG, each sent as a header only when you set it:
+
+- `external_agent_id` and `external_session_id` (`X-SLNG-Agent-Id`, `X-SLNG-Session-Id`) group usage by agent and by call.
+- `project_id` (`X-SLNG-Project-Id`), an SLNG project UUID, selects the project that usage is billed and limited under.
+
 ## Moving from livekit-plugins-slng
 
 This package replaces `livekit-plugins-slng`, the SLNG plugin published with LiveKit Agents. To switch:
