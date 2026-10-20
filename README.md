@@ -127,13 +127,11 @@ Three optional settings on both `STT` and `TTS` label the traffic for SLNG, each
 
 ## Moving from livekit-plugins-slng
 
-This package replaces `livekit-plugins-slng`, the SLNG plugin published with LiveKit Agents. To switch:
+This package replaces `livekit-plugins-slng`, the SLNG plugin published with LiveKit Agents. It needs the `livekit-agents` versions listed under Installation, so if yours is older, upgrade `livekit-agents` and its other plugins first. Then:
 
 1. Remove the old plugin with `pip uninstall livekit-plugins-slng`, and drop `slng` from any `livekit-agents[...]` extras.
 2. Install this one with `pip install livekit-slng`.
-3. Change the import. The rest of your code stays the same, except that the region's host is now required: pass `slng_base_url` or set `SLNG_BASE_URL`, unless every connection is a full endpoint URL. The behavior changes are listed below.
-
-This package needs `livekit-agents` 1.8 or later. Upgrade `livekit-agents` and its other plugins first if yours is older.
+3. Change the import. The rest of your code stays the same, apart from the changes listed below for the version you come from. Most of all, the region's host is now required: pass `slng_base_url` or set `SLNG_BASE_URL`, unless every connection is a full endpoint URL.
 
 ```python
 # before
@@ -145,7 +143,7 @@ import livekit_slng as slng
 
 The two packages use different import names, so having both installed breaks nothing while you switch. The plugin now logs to the `livekit_slng` logger instead of `livekit.plugins.slng`.
 
-### From livekit-plugins-slng 1.6.7 to 1.8
+### From livekit-plugins-slng 1.6.7 to 1.8.8
 
 These change what an existing worker does. [CHANGELOG.md](CHANGELOG.md) lists every change.
 
@@ -158,7 +156,7 @@ These change what an existing worker does. [CHANGELOG.md](CHANGELOG.md) lists ev
 
 ### From livekit-plugins-slng 1.6.6 or earlier
 
-Those releases connected to model endpoints directly. Since then:
+Those releases connected to model endpoints directly. Every change in the section above applies to you too, and since then:
 
 - All traffic goes through the Unmute Bridge. `model_endpoint` and `model_endpoints` were removed; pass a model identifier or `connections=[...]` instead.
 - STT no longer defaults to `model="deepgram/nova:3"`; pass a model (or `connections`) explicitly.
