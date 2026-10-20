@@ -131,7 +131,9 @@ This package replaces `livekit-plugins-slng`, the SLNG plugin published with Liv
 
 1. Remove the old plugin with `pip uninstall livekit-plugins-slng`, and drop `slng` from any `livekit-agents[...]` extras.
 2. Install this one with `pip install livekit-slng`.
-3. Change the import. The rest of your code stays the same.
+3. Change the import. The rest of your code stays the same, except that the region's host is now required: pass `slng_base_url` or set `SLNG_BASE_URL`, unless every connection is a full endpoint URL. The behavior changes are listed below.
+
+This package needs `livekit-agents` 1.8 or later. Upgrade `livekit-agents` and its other plugins first if yours is older.
 
 ```python
 # before
@@ -143,7 +145,7 @@ import livekit_slng as slng
 
 The two packages use different import names, so having both installed breaks nothing while you switch. The plugin now logs to the `livekit_slng` logger instead of `livekit.plugins.slng`.
 
-### From livekit-plugins-slng 1.7 or 1.8
+### From livekit-plugins-slng 1.6.7 to 1.8
 
 These change what an existing worker does. [CHANGELOG.md](CHANGELOG.md) lists every change.
 
